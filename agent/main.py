@@ -30,7 +30,11 @@ async def webhook(
 
     print(f"[IN]  {phone}: {message}")
 
-    reply = dental_agent.process_message(phone, message)
+    try:
+        reply = dental_agent.process_message(phone, message)
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        reply = "Disculpe, tenemos un problema técnico momentáneo. Por favor llame al 954 000 000 o inténtelo de nuevo."
 
     print(f"[OUT] {phone}: {reply}")
 
