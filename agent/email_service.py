@@ -1,22 +1,16 @@
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import json
+import urllib.request
+import urllib.error
 
 
 def send_confirmation_email(to_email: str, name: str, day: str, time: str, reason: str) -> bool:
-    """Envía email de confirmación de cita via Gmail SMTP."""
-    gmail_user = os.getenv('GMAIL_USER', 'mirkomma93@gmail.com')
-    gmail_password = os.getenv('GMAIL_APP_PASSWORD')
+    """Envía email de confirmación de cita via Resend API (HTTPS)."""
+    api_key = os.getenv('RESEND_API_KEY')
 
-    if not gmail_password:
-        print("[EMAIL] GMAIL_APP_PASSWORD no configurado — email no enviado")
+    if not api_key:
+        print("[EMAIL] RESEND_API_KEY no configurado — email no enviado")
         return False
-
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = "✅ Confirmación de cita — Clínica Dental Sevilla"
-    msg['From'] = f"Clínica Dental Sevilla <{gmail_user}>"
-    msg['To'] = to_email
 
     html = f"""
     <html>
@@ -51,14 +45,30 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
     </html>
     """
 
-    msg.attach(MIMEText(html, 'html'))
+    payload = json.dumps({
+        "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
+        "to": [to_email],
+        "subject": "✅ Confirmación de cita — Clínica Dental Sevilla",
+        "html": html
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+    )
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(gmail_user, gmail_password)
-            server.sendmail(gmail_user, to_email, msg.as_string())
-        print(f"[EMAIL] Confirmación enviada a {to_email}")
-        return True
+        with urllib.request.urlopen(req) as response:
+            print(f"[EMAIL] Confirmación enviada a {to_email} — status {response.status}")
+            return True
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"[EMAIL ERROR] HTTP {e.code}: {body}")
+        return False
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return False

@@ -22,10 +22,19 @@ scheduler.start()
 
 def _next_weekday(day_name: str) -> datetime | None:
     """Devuelve el próximo datetime para el nombre de día dado."""
-    target = DAY_MAP.get(day_name.lower().strip())
+    now = datetime.now(SPAIN_TZ)
+    day_lower = day_name.lower().strip()
+
+    # Términos relativos
+    if day_lower in ('hoy', 'today'):
+        return now
+    if day_lower in ('mañana', 'manana', 'tomorrow'):
+        return now + timedelta(days=1)
+
+    # Nombre de día de la semana
+    target = DAY_MAP.get(day_lower)
     if target is None:
         return None
-    now = datetime.now(SPAIN_TZ)
     days_ahead = target - now.weekday()
     if days_ahead <= 0:
         days_ahead += 7
