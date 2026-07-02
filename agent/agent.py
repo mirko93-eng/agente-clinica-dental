@@ -2,6 +2,9 @@ import os
 import anthropic
 from collections import defaultdict
 from agent.knowledge import SYSTEM_PROMPT
+from agent.appointment_parser import extract_email_from_messages, parse_appointment_from_response
+from agent.email_service import send_confirmation_email
+from agent.reminder_service import schedule_whatsapp_reminder
 
 
 class DentalAgent:
@@ -14,6 +17,8 @@ class DentalAgent:
         self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         # Historial de conversación por paciente (número WhatsApp)
         self.conversations: dict[str, list[dict]] = defaultdict(list)
+        # Evitar enviar email/recordatorio dos veces por la misma cita
+        self.confirmed_appointments: set[str] = set()
 
     def process_message(self, phone: str, message: str) -> str:
         """
@@ -46,4 +51,33 @@ class DentalAgent:
             "content": reply
         })
 
+        # Detectar confirmación de cita y enviar email + programar recordatorio
+        self._handle_appointment(phone, reply)
+
         return reply
+
+    def _handle_appointment(self, phone: str, reply: str):
+        """Envía email de confirmación y programa recordatorio si la respuesta confirma cita."""
+        appointment = parse_appointment_from_response(reply)
+        if not appointment:
+            return
+
+        # Clave única para esta cita (evitar duplicados)
+        appt_key = f"{phone}_{appointment.get('day')}_{appointment.get('time')}"
+        if appt_key in self.confirmed_appointments:
+            return
+        self.confirmed_appointments.add(appt_key)
+
+        name = appointment.get('name', 'Paciente')
+        day = appointment.get('day', '')
+        time = appointment.get('time', '')
+        reason = appointment.get('reason', 'Consulta dental')
+
+        # Enviar email si el paciente dio su correo
+        email = extract_email_from_messages(self.conversations[phone])
+        if email:
+            send_confirmation_email(email, name, day, time, reason)
+
+        # Programar recordatorio WhatsApp 4 horas antes
+        if day and time:
+            schedule_whatsapp_reminder(phone, name, day, time, reason)
