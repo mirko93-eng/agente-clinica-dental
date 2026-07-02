@@ -1,16 +1,16 @@
 import os
-import json
-import urllib.request
-import urllib.error
+import resend
 
 
 def send_confirmation_email(to_email: str, name: str, day: str, time: str, reason: str) -> bool:
-    """Envía email de confirmación de cita via Resend API (HTTPS)."""
+    """Envía email de confirmación de cita via Resend SDK."""
     api_key = os.getenv('RESEND_API_KEY')
 
     if not api_key:
         print("[EMAIL] RESEND_API_KEY no configurado — email no enviado")
         return False
+
+    resend.api_key = api_key
 
     html = f"""
     <html>
@@ -45,30 +45,16 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
     </html>
     """
 
-    payload = json.dumps({
-        "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
-        "to": [to_email],
-        "subject": "✅ Confirmación de cita — Clínica Dental Sevilla",
-        "html": html
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://api.resend.com/emails",
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-    )
-
     try:
-        with urllib.request.urlopen(req) as response:
-            print(f"[EMAIL] Confirmación enviada a {to_email} — status {response.status}")
-            return True
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        print(f"[EMAIL ERROR] HTTP {e.code}: {body}")
-        return False
+        params = {
+            "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": "✅ Confirmación de cita — Clínica Dental Sevilla",
+            "html": html,
+        }
+        response = resend.Emails.send(params)
+        print(f"[EMAIL] Confirmación enviada a {to_email} — id: {response.get('id', '?')}")
+        return True
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return False
