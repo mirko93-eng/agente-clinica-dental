@@ -28,10 +28,15 @@ class DentalAgent:
         message: texto recibido
         """
         # Añadir mensaje del paciente al historial
-        self.conversations[phone].append({
-            "role": "user",
-            "content": message
-        })
+        # Si el último mensaje ya es del usuario, fusionar en vez de añadir
+        # (evita error de Claude API con dos mensajes "user" consecutivos)
+        if self.conversations[phone] and self.conversations[phone][-1]["role"] == "user":
+            self.conversations[phone][-1]["content"] += f"\n{message}"
+        else:
+            self.conversations[phone].append({
+                "role": "user",
+                "content": message
+            })
 
         # Mantener últimos 20 turnos para no superar el contexto
         history = self.conversations[phone][-20:]
