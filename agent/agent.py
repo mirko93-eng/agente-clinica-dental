@@ -1,4 +1,5 @@
 import os
+import threading
 import anthropic
 from collections import defaultdict
 from agent.knowledge import SYSTEM_PROMPT
@@ -51,33 +52,38 @@ class DentalAgent:
             "content": reply
         })
 
-        # Detectar confirmación de cita y enviar email + programar recordatorio
+        # Detectar confirmación de cita y lanzar email + recordatorio en segundo plano
         self._handle_appointment(phone, reply)
 
         return reply
 
     def _handle_appointment(self, phone: str, reply: str):
-        """Envía email de confirmación y programa recordatorio si la respuesta confirma cita."""
+        """Lanza email y recordatorio en hilo separado para no bloquear la respuesta."""
         appointment = parse_appointment_from_response(reply)
         if not appointment:
             return
 
-        # Clave única para esta cita (evitar duplicados)
         appt_key = f"{phone}_{appointment.get('day')}_{appointment.get('time')}"
         if appt_key in self.confirmed_appointments:
             return
         self.confirmed_appointments.add(appt_key)
 
+        # Copiar datos para el hilo (evitar race conditions)
         name = appointment.get('name', 'Paciente')
         day = appointment.get('day', '')
         time = appointment.get('time', '')
         reason = appointment.get('reason', 'Consulta dental')
-
-        # Enviar email si el paciente dio su correo
         email = extract_email_from_messages(self.conversations[phone])
-        if email:
-            send_confirmation_email(email, name, day, time, reason)
 
-        # Programar recordatorio WhatsApp 4 horas antes
-        if day and time:
-            schedule_whatsapp_reminder(phone, name, day, time, reason)
+        # Ejecutar en hilo para no bloquear la respuesta a Twilio
+        def background():
+            try:
+                if email:
+                    send_confirmation_email(email, name, day, time, reason)
+                if day and time:
+                    schedule_whatsapp_reminder(phone, name, day, time, reason)
+            except Exception as e:
+                print(f"[BACKGROUND ERROR] {e}")
+
+        t = threading.Thread(target=background, daemon=True)
+        t.start()
