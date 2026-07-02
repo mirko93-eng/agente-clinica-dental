@@ -7,6 +7,7 @@ from agent.knowledge import SYSTEM_PROMPT
 from agent.appointment_parser import extract_email_from_messages, parse_appointment_from_response
 from agent.email_service import send_confirmation_email
 from agent.reminder_service import schedule_whatsapp_reminder
+from agent.calendar_service import create_calendar_event
 
 DATA_FILE = "/app/data/patients.json"
 
@@ -104,6 +105,7 @@ class DentalAgent:
                     send_confirmation_email(email, name, day, time, reason)
                 if day and time:
                     schedule_whatsapp_reminder(phone, name, day, time, reason)
+                    create_calendar_event(name, day, time, reason, email)
             except Exception as e:
                 print(f"[BACKGROUND ERROR] {e}")
 
