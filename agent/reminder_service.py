@@ -16,14 +16,28 @@ DAY_MAP = {
     'domingo': 6,
 }
 
+_DAY_TOKEN_PATTERN = re.compile(
+    r'\b(hoy|mañana|manana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b',
+    re.IGNORECASE
+)
+
 scheduler = BackgroundScheduler(timezone=SPAIN_TZ)
 scheduler.start()
 
 
 def _next_weekday(day_name: str) -> datetime | None:
-    """Devuelve el próximo datetime para el nombre de día dado."""
+    """
+    Devuelve el próximo datetime para el día dado. Extrae el nombre del día
+    de dentro del texto (no exige coincidencia exacta), para soportar
+    variantes como "Martes 7" que el modelo puede añadir junto al nombre
+    del día de la semana.
+    """
     now = datetime.now(SPAIN_TZ)
-    day_lower = day_name.lower().strip()
+
+    match = _DAY_TOKEN_PATTERN.search(day_name)
+    if not match:
+        return None
+    day_lower = match.group(0).lower()
 
     # Términos relativos
     if day_lower in ('hoy', 'today'):

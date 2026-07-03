@@ -23,6 +23,11 @@ DAY_MAP = {
 
 _WEEKDAY_NAMES_ES = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
 
+_DAY_TOKEN_PATTERN = re.compile(
+    r'\b(hoy|mañana|manana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b',
+    re.IGNORECASE
+)
+
 # Horario de la clínica: weekday (0=lun) → (hora_inicio, hora_fin) o None si cerrado
 WORKING_HOURS = {
     0: (9, 20),
@@ -75,9 +80,18 @@ def _get_access_token() -> str | None:
 
 
 def _parse_day_to_date(day: str) -> datetime | None:
-    """Convierte un nombre de día en un objeto datetime (hora 0:00, zona España)."""
+    """
+    Convierte un día en un objeto datetime (hora 0:00, zona España).
+    Extrae el nombre del día de dentro del texto (no exige coincidencia
+    exacta), para soportar variantes como "Martes 7" o "martes 7 de julio"
+    que el modelo puede añadir junto al nombre del día de la semana.
+    """
     now = datetime.now(SPAIN_TZ)
-    day_lower = day.lower().strip()
+
+    match = _DAY_TOKEN_PATTERN.search(day)
+    if not match:
+        return None
+    day_lower = match.group(0).lower()
 
     if day_lower in ('hoy', 'today'):
         return now
