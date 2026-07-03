@@ -58,3 +58,56 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return False
+
+
+def send_cancellation_email(to_email: str, name: str, day: str, time: str) -> bool:
+    """Envía email de cancelación de cita via Resend SDK."""
+    api_key = os.getenv('RESEND_API_KEY')
+
+    if not api_key:
+        print("[EMAIL] RESEND_API_KEY no configurado — email de cancelación no enviado")
+        return False
+
+    resend.api_key = api_key
+
+    html = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; color: #333; max-width: 500px; margin: 0 auto;">
+        <div style="background: #c62828; padding: 20px; text-align: center;">
+            <h2 style="color: white; margin: 0;">🦷 Clínica Dental Sevilla</h2>
+        </div>
+        <div style="padding: 30px; background: #f9f9f9;">
+            <p>Estimado/a <strong>{name}</strong>,</p>
+            <p>Le confirmamos que su cita ha sido <strong>cancelada</strong>:</p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+                <tr style="background: #fdeaea;">
+                    <td style="padding: 10px; font-weight: bold;">📅 Día</td>
+                    <td style="padding: 10px;">{day}</td>
+                </tr>
+                <tr>
+                    <td style="padding: 10px; font-weight: bold;">⏰ Hora</td>
+                    <td style="padding: 10px;">{time}</td>
+                </tr>
+            </table>
+            <p>Si desea agendar una nueva cita, respóndanos por WhatsApp cuando quiera.</p>
+        </div>
+        <div style="padding: 15px; text-align: center; font-size: 12px; color: #666;">
+            <p>Clínica Dental Sevilla — Lunes a viernes 9:00-20:00 | Sábados 9:00-14:00</p>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        params = {
+            "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
+            "to": [to_email],
+            "subject": "❌ Cancelación de cita — Clínica Dental Sevilla",
+            "html": html,
+        }
+        response = resend.Emails.send(params)
+        print(f"[EMAIL] Cancelación enviada a {to_email} — id: {response.get('id', '?')}")
+        return True
+    except Exception as e:
+        print(f"[EMAIL ERROR] {e}")
+        return False

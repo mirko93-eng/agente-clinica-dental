@@ -5,15 +5,35 @@ import threading
 import anthropic
 from collections import defaultdict
 from agent.knowledge import SYSTEM_PROMPT
-from agent.appointment_parser import extract_email_from_messages, parse_appointment_from_response
-from agent.email_service import send_confirmation_email
-from agent.reminder_service import schedule_whatsapp_reminder
-from agent.calendar_service import create_calendar_event, get_available_slots
+from agent.appointment_parser import (
+    extract_email_from_messages,
+    parse_appointment_from_response,
+    parse_cancellation_from_response,
+)
+from agent.email_service import send_confirmation_email, send_cancellation_email
+from agent.reminder_service import (
+    schedule_whatsapp_reminder,
+    cancel_whatsapp_reminder,
+    send_cancellation_confirmation,
+)
+from agent.calendar_service import (
+    create_calendar_event,
+    get_available_slots,
+    find_appointments_by_phone,
+    get_event,
+    delete_calendar_event,
+)
 
 DATA_FILE = "/app/data/patients.json"
 
 _DAY_PATTERN = re.compile(
     r'\b(hoy|mañana|manana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b',
+    re.IGNORECASE
+)
+
+_CANCEL_INTENT_PATTERN = re.compile(
+    r'\b(cancelar|cancela|cancelaci[oó]n|anular|anula|no puedo ir|no podr[eé] ir|'
+    r'no voy a poder|reprogramar|cambiar (mi )?cita|cambiar la cita|cambiar de (hora|d[ií]a))\b',
     re.IGNORECASE
 )
 
@@ -56,13 +76,15 @@ class DentalAgent:
         raw = _load_data()
         self.conversations: dict[str, list[dict]] = defaultdict(list, raw.get("conversations", {}))
         self.confirmed_appointments: set[str] = set(raw.get("confirmed_appointments", []))
+        self.confirmed_cancellations: set[str] = set(raw.get("confirmed_cancellations", []))
         print(f"[DATA] Cargados {len(self.conversations)} pacientes en memoria")
 
     def _persist(self):
         """Guarda el estado actual en disco."""
         _save_data({
             "conversations": dict(self.conversations),
-            "confirmed_appointments": list(self.confirmed_appointments)
+            "confirmed_appointments": list(self.confirmed_appointments),
+            "confirmed_cancellations": list(self.confirmed_cancellations)
         })
 
     def _inject_availability(self, phone: str, raw_message: str):
@@ -97,6 +119,46 @@ class DentalAgent:
         )
         print(f"[AVAILABILITY] Inyectado para {day}: {slots}")
 
+    def _inject_cancellation_context(self, phone: str, raw_message: str):
+        """
+        Si el mensaje indica intención de cancelar/cambiar cita, busca en
+        Google Calendar las citas futuras del paciente (por teléfono) e
+        inyecta los resultados reales en el último mensaje del usuario, para
+        que Camila pida confirmación explícita antes de borrar nada.
+        """
+        if not _CANCEL_INTENT_PATTERN.search(raw_message):
+            return
+
+        try:
+            appointments = find_appointments_by_phone(phone)
+        except Exception as e:
+            print(f"[CANCEL LOOKUP ERROR] {e}")
+            return
+
+        if appointments is None:
+            # No se pudo consultar el calendario — Camila responde sin contexto
+            return
+
+        if not appointments:
+            context = "[CANCELACION-BUSQUEDA: sin citas encontradas]\n"
+        elif len(appointments) == 1:
+            a = appointments[0]
+            context = (
+                f"[CANCELACION-BUSQUEDA: 1 cita encontrada → "
+                f"ID={a['event_id']} Día={a['day_display']} Hora={a['time_display']}]\n"
+            )
+        else:
+            items = " · ".join(
+                f"{i + 1}) ID={a['event_id']} Día={a['day_display']} Hora={a['time_display']}"
+                for i, a in enumerate(appointments)
+            )
+            context = f"[CANCELACION-BUSQUEDA: {len(appointments)} citas encontradas → {items}]\n"
+
+        self.conversations[phone][-1]["content"] = (
+            context + self.conversations[phone][-1]["content"]
+        )
+        print(f"[CANCEL LOOKUP] {phone}: {len(appointments)} cita(s) encontrada(s)")
+
     def process_message(self, phone: str, message: str) -> str:
         # Fusionar mensajes consecutivos de usuario (evita error de Claude API)
         if self.conversations[phone] and self.conversations[phone][-1]["role"] == "user":
@@ -106,6 +168,9 @@ class DentalAgent:
 
         # Consultar disponibilidad e inyectar contexto si se menciona un día
         self._inject_availability(phone, message)
+
+        # Buscar citas existentes e inyectar contexto si hay intención de cancelar
+        self._inject_cancellation_context(phone, message)
 
         # Mantener últimos 20 turnos
         history = self.conversations[phone][-20:]
@@ -126,6 +191,7 @@ class DentalAgent:
 
         # Email + recordatorio + calendario en hilo para no bloquear
         self._handle_appointment(phone, reply)
+        self._handle_cancellation(phone, reply)
 
         return reply
 
@@ -152,9 +218,44 @@ class DentalAgent:
                     send_confirmation_email(email, name, day, time, reason)
                 if day and time:
                     schedule_whatsapp_reminder(phone, name, day, time, reason)
-                    create_calendar_event(name, day, time, reason, email)
+                    create_calendar_event(name, day, time, reason, phone, email)
             except Exception as e:
                 print(f"[BACKGROUND ERROR] {e}")
+
+        t = threading.Thread(target=background, daemon=True)
+        t.start()
+
+    def _handle_cancellation(self, phone: str, reply: str):
+        cancellation = parse_cancellation_from_response(reply)
+        if not cancellation:
+            return
+
+        event_id = cancellation.get('event_id')
+        if not event_id or event_id in self.confirmed_cancellations:
+            return
+        self.confirmed_cancellations.add(event_id)
+        self._persist()
+
+        name = cancellation.get('name', 'Paciente')
+        day = cancellation.get('day', '')
+        time = cancellation.get('time', '')
+        email = extract_email_from_messages(self.conversations[phone])
+
+        def background():
+            try:
+                event = get_event(event_id)
+                delete_calendar_event(event_id)
+                if event and event.get('start'):
+                    cancel_whatsapp_reminder(phone, event['start'])
+                send_cancellation_confirmation(phone, name, day, time)
+                if email:
+                    send_cancellation_email(email, name, day, time)
+                print(
+                    f"[CANCEL] Cita cancelada — evento={event_id} paciente={name} "
+                    f"teléfono={phone} día={day} hora={time}"
+                )
+            except Exception as e:
+                print(f"[CANCEL BACKGROUND ERROR] {e}")
 
         t = threading.Thread(target=background, daemon=True)
         t.start()

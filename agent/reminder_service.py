@@ -81,6 +81,42 @@ def schedule_whatsapp_reminder(phone: str, name: str, day: str, time_str: str, r
         print(f"[REMINDER ERROR] {e}")
 
 
+def cancel_whatsapp_reminder(phone: str, appt_dt: datetime):
+    """Cancela el recordatorio de WhatsApp programado para una cita, si existe."""
+    job_id = f"reminder_{phone}_{appt_dt.isoformat()}"
+    try:
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+            print(f"[REMINDER] Cancelado recordatorio {job_id}")
+        else:
+            print(f"[REMINDER] No había recordatorio programado para {job_id}")
+    except Exception as e:
+        print(f"[REMINDER ERROR] Cancelación: {e}")
+
+
+def send_cancellation_confirmation(phone: str, name: str, day: str, time_str: str):
+    """Envía confirmación de cancelación de cita por WhatsApp via Twilio."""
+    try:
+        client = Client(
+            os.getenv('TWILIO_ACCOUNT_SID'),
+            os.getenv('TWILIO_AUTH_TOKEN'),
+        )
+        from_number = os.getenv('TWILIO_WHATSAPP_NUMBER', 'whatsapp:+34603523811')
+
+        body = (
+            f"❌ *Cita cancelada — Clínica Dental Sevilla*\n\n"
+            f"Estimado/a {name}, su cita del *{day} a las {time_str}* ha sido cancelada correctamente.\n\n"
+            f"Si desea agendar una nueva cita, escríbanos cuando quiera.\n"
+            f"¡Gracias!"
+        )
+
+        client.messages.create(from_=from_number, to=phone, body=body)
+        print(f"[CANCEL WHATSAPP SENT] → {phone}")
+
+    except Exception as e:
+        print(f"[CANCEL WHATSAPP ERROR] {e}")
+
+
 def _send_whatsapp_reminder(phone: str, name: str, day: str, time_str: str, reason: str):
     """Envía el recordatorio por WhatsApp via Twilio."""
     try:
