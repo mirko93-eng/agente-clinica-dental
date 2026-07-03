@@ -28,6 +28,21 @@ _DAY_TOKEN_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+MONTH_MAP = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
+    'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
+    'septiembre': 9, 'setiembre': 9, 'octubre': 10,
+    'noviembre': 11, 'diciembre': 12,
+}
+
+_DATE_WITH_MONTH_NAME_PATTERN = re.compile(
+    r'\b(\d{1,2})\s*(?:de\s+)?(' + '|'.join(MONTH_MAP.keys()) + r')'
+    r'(?:\s*(?:de\s+)?(\d{4}))?\b',
+    re.IGNORECASE
+)
+
+_NUMERIC_DATE_PATTERN = re.compile(r'\b(\d{1,2})[/\-](\d{1,2})(?:[/\-](\d{2,4}))?\b')
+
 # Horario de la clínica: weekday (0=lun) → (hora_inicio, hora_fin) o None si cerrado
 WORKING_HOURS = {
     0: (9, 20),
@@ -79,14 +94,58 @@ def _get_access_token() -> str | None:
         return None
 
 
-def _parse_day_to_date(day: str) -> datetime | None:
+def _resolve_year(month: int, day_num: int, now: datetime) -> int:
+    """Si el mes/día ya pasó este año, usa el año siguiente (próxima ocurrencia)."""
+    try:
+        candidate = SPAIN_TZ.localize(datetime(now.year, month, day_num))
+    except ValueError:
+        return now.year
+    return now.year + 1 if candidate.date() < now.date() else now.year
+
+
+def parse_day_to_date(day: str) -> datetime | None:
     """
-    Convierte un día en un objeto datetime (hora 0:00, zona España).
-    Extrae el nombre del día de dentro del texto (no exige coincidencia
-    exacta), para soportar variantes como "Martes 7" o "martes 7 de julio"
-    que el modelo puede añadir junto al nombre del día de la semana.
+    Convierte un día en un objeto datetime (hora 0:00, zona España). Es la
+    ÚNICA función de parseo de fecha del proyecto — la usan tanto la creación
+    y consulta de Google Calendar como la programación/cancelación de
+    recordatorios de WhatsApp, para no tener que arreglar el mismo bug de
+    formato en dos sitios.
+
+    Reconoce, en este orden de prioridad (una fecha explícita manda sobre un
+    nombre de día suelto si ambos aparecen en el texto):
+      1) Fecha con nombre de mes: "8 de julio", "martes 7 de julio de 2026"
+      2) Fecha numérica: "07/07", "8/7/2026", "07-07"
+      3) Nombre de día de la semana o término relativo, en cualquier parte
+         del texto (soporta "Martes 7", "hoy", "mañana", etc.)
+
+    Si el año no se especifica, usa el actual o el siguiente si esa fecha
+    ya pasó este año.
     """
     now = datetime.now(SPAIN_TZ)
+
+    m = _DATE_WITH_MONTH_NAME_PATTERN.search(day)
+    if m:
+        day_num = int(m.group(1))
+        month = MONTH_MAP[m.group(2).lower()]
+        year = int(m.group(3)) if m.group(3) else _resolve_year(month, day_num, now)
+        try:
+            return SPAIN_TZ.localize(datetime(year, month, day_num))
+        except ValueError:
+            return None
+
+    m = _NUMERIC_DATE_PATTERN.search(day)
+    if m:
+        day_num, month = int(m.group(1)), int(m.group(2))
+        if m.group(3):
+            year = int(m.group(3))
+            if year < 100:
+                year += 2000
+        else:
+            year = _resolve_year(month, day_num, now)
+        try:
+            return SPAIN_TZ.localize(datetime(year, month, day_num))
+        except ValueError:
+            return None
 
     match = _DAY_TOKEN_PATTERN.search(day)
     if not match:
@@ -109,7 +168,7 @@ def _parse_day_to_date(day: str) -> datetime | None:
 
 def _parse_appointment_datetime(day: str, time_str: str):
     """Convierte día y hora en datetime de España."""
-    base = _parse_day_to_date(day)
+    base = parse_day_to_date(day)
     if base is None:
         return None, None
 
@@ -134,7 +193,7 @@ def get_available_slots(day: str) -> list | None:
     if not access_token:
         return None
 
-    appt_date = _parse_day_to_date(day)
+    appt_date = parse_day_to_date(day)
     if not appt_date:
         return None
 

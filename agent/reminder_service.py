@@ -6,59 +6,18 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from twilio.rest import Client
 
+from agent.calendar_service import parse_day_to_date
+
 SPAIN_TZ = pytz.timezone('Europe/Madrid')
-
-DAY_MAP = {
-    'lunes': 0, 'martes': 1,
-    'miércoles': 2, 'miercoles': 2,
-    'jueves': 3, 'viernes': 4,
-    'sábado': 5, 'sabado': 5,
-    'domingo': 6,
-}
-
-_DAY_TOKEN_PATTERN = re.compile(
-    r'\b(hoy|mañana|manana|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b',
-    re.IGNORECASE
-)
 
 scheduler = BackgroundScheduler(timezone=SPAIN_TZ)
 scheduler.start()
 
 
-def _next_weekday(day_name: str) -> datetime | None:
-    """
-    Devuelve el próximo datetime para el día dado. Extrae el nombre del día
-    de dentro del texto (no exige coincidencia exacta), para soportar
-    variantes como "Martes 7" que el modelo puede añadir junto al nombre
-    del día de la semana.
-    """
-    now = datetime.now(SPAIN_TZ)
-
-    match = _DAY_TOKEN_PATTERN.search(day_name)
-    if not match:
-        return None
-    day_lower = match.group(0).lower()
-
-    # Términos relativos
-    if day_lower in ('hoy', 'today'):
-        return now
-    if day_lower in ('mañana', 'manana', 'tomorrow'):
-        return now + timedelta(days=1)
-
-    # Nombre de día de la semana
-    target = DAY_MAP.get(day_lower)
-    if target is None:
-        return None
-    days_ahead = target - now.weekday()
-    if days_ahead <= 0:
-        days_ahead += 7
-    return now + timedelta(days=days_ahead)
-
-
 def schedule_whatsapp_reminder(phone: str, name: str, day: str, time_str: str, reason: str):
     """Programa un recordatorio de WhatsApp 4 horas antes de la cita."""
     try:
-        appt_date = _next_weekday(day)
+        appt_date = parse_day_to_date(day)
         if not appt_date:
             print(f"[REMINDER] No se pudo parsear el día: {day}")
             return
