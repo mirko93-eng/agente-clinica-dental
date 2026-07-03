@@ -63,7 +63,7 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
 
     try:
         params = {
-            "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
+            "from": "Clínica Dental Sevilla <citas@nivelup.es>",
             "to": [to_email],
             "subject": "✅ Confirmación de cita — Clínica Dental Sevilla",
             "html": html,
@@ -116,7 +116,7 @@ def send_cancellation_email(to_email: str, name: str, day: str, time: str) -> bo
 
     try:
         params = {
-            "from": "Clínica Dental Sevilla <onboarding@resend.dev>",
+            "from": "Clínica Dental Sevilla <citas@nivelup.es>",
             "to": [to_email],
             "subject": "❌ Cancelación de cita — Clínica Dental Sevilla",
             "html": html,
