@@ -1,5 +1,21 @@
 import os
 import resend
+from resend.exceptions import ResendError
+
+
+def _log_resend_failure(context: str, to_email: str, e: Exception):
+    """Log detallado del fallo de envío, distinguiendo errores de la API de
+    Resend (código/tipo/mensaje reales) de fallos inesperados (red, etc.)."""
+    if isinstance(e, ResendError):
+        print(
+            f"[EMAIL ERROR] Resend rechazó el envío de {context} a {to_email} — "
+            f"status={e.code} tipo={e.error_type} mensaje={e.message}"
+        )
+    else:
+        print(
+            f"[EMAIL ERROR] Fallo inesperado enviando {context} a {to_email}: "
+            f"{type(e).__name__}: {e}"
+        )
 
 
 def send_confirmation_email(to_email: str, name: str, day: str, time: str, reason: str) -> bool:
@@ -56,7 +72,7 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
         print(f"[EMAIL] Confirmación enviada a {to_email} — id: {response.get('id', '?')}")
         return True
     except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
+        _log_resend_failure("confirmación de cita", to_email, e)
         return False
 
 
@@ -109,5 +125,5 @@ def send_cancellation_email(to_email: str, name: str, day: str, time: str) -> bo
         print(f"[EMAIL] Cancelación enviada a {to_email} — id: {response.get('id', '?')}")
         return True
     except Exception as e:
-        print(f"[EMAIL ERROR] {e}")
+        _log_resend_failure("cancelación de cita", to_email, e)
         return False

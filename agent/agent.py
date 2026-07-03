@@ -22,6 +22,7 @@ from agent.calendar_service import (
     find_appointments_by_phone,
     get_event,
     delete_calendar_event,
+    normalize_phone,
 )
 
 DATA_FILE = "/app/data/patients.json"
@@ -137,6 +138,7 @@ class DentalAgent:
 
         if appointments is None:
             # No se pudo consultar el calendario — Camila responde sin contexto
+            print(f"[CANCEL LOOKUP] No se pudo consultar el calendario para {phone} (credenciales ausentes o error de API)")
             return
 
         if not appointments:
@@ -233,8 +235,6 @@ class DentalAgent:
         event_id = cancellation.get('event_id')
         if not event_id or event_id in self.confirmed_cancellations:
             return
-        self.confirmed_cancellations.add(event_id)
-        self._persist()
 
         name = cancellation.get('name', 'Paciente')
         day = cancellation.get('day', '')
@@ -243,9 +243,41 @@ class DentalAgent:
 
         def background():
             try:
+                # 1) El evento tiene que existir de verdad en Calendar — si el modelo
+                #    inventó un ID, get_event devuelve None y no se envía nada.
                 event = get_event(event_id)
-                delete_calendar_event(event_id)
-                if event and event.get('start'):
+                if not event:
+                    print(
+                        f"[CANCEL ERROR] event_id={event_id!r} no existe en Google Calendar "
+                        f"(paciente={phone}) — probablemente un ID inventado por el modelo o "
+                        f"una cita ya cancelada. No se envía ninguna confirmación."
+                    )
+                    return
+
+                # 2) El evento debe pertenecer a este paciente (si tiene el dato guardado).
+                expected_phone = normalize_phone(phone)
+                stored_phone = event.get('phone')
+                if stored_phone and stored_phone != expected_phone:
+                    print(
+                        f"[CANCEL ERROR] event_id={event_id!r} pertenece a otro teléfono "
+                        f"({stored_phone!r}, se esperaba {expected_phone!r}) — cancelación "
+                        f"bloqueada por seguridad."
+                    )
+                    return
+
+                # 3) Solo si el borrado fue confirmado por la API se avisa al paciente.
+                deleted = delete_calendar_event(event_id)
+                if not deleted:
+                    print(
+                        f"[CANCEL ERROR] No se pudo borrar el evento {event_id!r} en Calendar "
+                        f"(paciente={phone}) — no se envía confirmación de cancelación."
+                    )
+                    return
+
+                self.confirmed_cancellations.add(event_id)
+                self._persist()
+
+                if event.get('start'):
                     cancel_whatsapp_reminder(phone, event['start'])
                 send_cancellation_confirmation(phone, name, day, time)
                 if email:

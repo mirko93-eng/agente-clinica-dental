@@ -1,7 +1,9 @@
 import os
+import re
 import json
 import urllib.request
 import urllib.parse
+import urllib.error
 from datetime import datetime, timedelta
 import pytz
 
@@ -31,6 +33,17 @@ WORKING_HOURS = {
     5: (9, 14),
     6: None,
 }
+
+
+def normalize_phone(phone: str) -> str:
+    """
+    Normaliza el identificador de teléfono a un formato estable. Es la ÚNICA
+    función que debe usarse tanto al guardar el teléfono en extendedProperties
+    (create_calendar_event) como al buscar por él (find_appointments_by_phone),
+    para que espacios o mayúsculas distintas en el prefijo "whatsapp:" no
+    impidan encontrar la cita real del paciente.
+    """
+    return re.sub(r'\s+', '', phone.strip().lower())
 
 
 def _get_access_token() -> str | None:
@@ -82,7 +95,6 @@ def _parse_day_to_date(day: str) -> datetime | None:
 
 def _parse_appointment_datetime(day: str, time_str: str):
     """Convierte día y hora en datetime de España."""
-    import re
     base = _parse_day_to_date(day)
     if base is None:
         return None, None
@@ -178,6 +190,8 @@ def create_calendar_event(name: str, day: str, time_str: str, reason: str, phone
         print(f"[CALENDAR] No se pudo parsear la fecha: {day} {time_str}")
         return None
 
+    phone_key = normalize_phone(phone)
+
     event = {
         "summary": f"🦷 Cita — {name}",
         "description": f"Motivo: {reason}\nPaciente: {name}\nTeléfono: {phone}",
@@ -190,7 +204,7 @@ def create_calendar_event(name: str, day: str, time_str: str, reason: str, phone
             "timeZone": "Europe/Madrid"
         },
         "extendedProperties": {
-            "private": {"phone": phone}
+            "private": {"phone": phone_key}
         },
         "reminders": {
             "useDefault": False,
@@ -240,12 +254,14 @@ def find_appointments_by_phone(phone: str) -> list | None:
     if not access_token:
         return None
 
+    phone_key = normalize_phone(phone)
+
     now = datetime.now(SPAIN_TZ)
     params = urllib.parse.urlencode({
         "timeMin": now.isoformat(),
         "singleEvents": "true",
         "orderBy": "startTime",
-        "privateExtendedProperty": f"phone={phone}",
+        "privateExtendedProperty": f"phone={phone_key}",
     })
 
     req = urllib.request.Request(
@@ -258,7 +274,7 @@ def find_appointments_by_phone(phone: str) -> list | None:
             data = json.loads(resp.read())
             items = data.get("items", [])
     except Exception as e:
-        print(f"[CALENDAR ERROR] Búsqueda citas: {e}")
+        print(f"[CALENDAR ERROR] Búsqueda citas (phone_key={phone_key!r}): {e}")
         return None
 
     appointments = []
@@ -276,7 +292,14 @@ def find_appointments_by_phone(phone: str) -> list | None:
             "time_display": start_dt.strftime("%H:%M"),
         })
 
-    print(f"[CALENDAR] Búsqueda citas para {phone}: {len(appointments)} encontrada(s)")
+    if not appointments:
+        print(
+            f"[CALENDAR] Búsqueda citas para phone_key={phone_key!r}: 0 encontradas "
+            f"(sin coincidencias en extendedProperties.private.phone — puede ser una "
+            f"cita creada antes de guardar el teléfono, o un desajuste de formato)"
+        )
+    else:
+        print(f"[CALENDAR] Búsqueda citas para phone_key={phone_key!r}: {len(appointments)} encontrada(s)")
     return appointments
 
 
@@ -294,6 +317,15 @@ def get_event(event_id: str) -> dict | None:
     try:
         with urllib.request.urlopen(req) as resp:
             item = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            print(
+                f"[CALENDAR] Evento {event_id!r} no existe (404) — probablemente un ID "
+                f"inventado por el modelo o una cita ya borrada anteriormente"
+            )
+        else:
+            print(f"[CALENDAR ERROR] Obtener evento {event_id}: HTTP {e.code} {e.reason}")
+        return None
     except Exception as e:
         print(f"[CALENDAR ERROR] Obtener evento {event_id}: {e}")
         return None
@@ -308,6 +340,7 @@ def get_event(event_id: str) -> dict | None:
         "summary": item.get("summary", ""),
         "description": item.get("description", ""),
         "start": start_dt,
+        "phone": item.get("extendedProperties", {}).get("private", {}).get("phone"),
     }
 
 
@@ -327,6 +360,12 @@ def delete_calendar_event(event_id: str) -> bool:
         urllib.request.urlopen(req)
         print(f"[CALENDAR] Evento eliminado: {event_id}")
         return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404 or e.code == 410:
+            print(f"[CALENDAR ERROR] Evento {event_id!r} no existe o ya estaba borrado (HTTP {e.code})")
+        else:
+            print(f"[CALENDAR ERROR] Eliminar evento {event_id}: HTTP {e.code} {e.reason}")
+        return False
     except Exception as e:
         print(f"[CALENDAR ERROR] Eliminar evento {event_id}: {e}")
         return False
