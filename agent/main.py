@@ -4,7 +4,9 @@ import urllib.request
 import urllib.parse
 from fastapi import FastAPI, Form, Response, Request
 from dotenv import load_dotenv
-from agent.agent import DentalAgent
+import hmac
+from xml.sax.saxutils import escape as xml_escape
+from agent.agent import DentalAgent, handoff_token
 
 load_dotenv()
 
@@ -80,11 +82,32 @@ async def webhook(
         print(f"[ERROR] {e}")
         reply = "Disculpe, tenemos un problema técnico momentáneo. Por favor llame al 954 000 000 o inténtelo de nuevo."
 
+    if not reply:
+        # Paciente en atención humana: no se responde nada
+        return Response(
+            content='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+            media_type="application/xml",
+        )
+
     print(f"[OUT] {phone}: {reply}")
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Message>{reply}</Message>
+    <Message>{xml_escape(reply)}</Message>
 </Response>"""
 
     return Response(content=twiml, media_type="application/xml")
+
+
+@app.get("/reactivar")
+def reactivar(phone: str = "", token: str = ""):
+    """Enlace del email de aviso: devuelve el paciente al asistente."""
+    if not phone or not hmac.compare_digest(token, handoff_token(phone)):
+        return Response(content="Enlace no válido", status_code=403)
+    dental_agent.reactivate(phone)
+    return Response(
+        content="<html><body style='font-family:Arial;padding:30px'>"
+                "<h2>✅ Asistente reactivado</h2>"
+                "<p>Camila vuelve a atender a este paciente.</p></body></html>",
+        media_type="text/html",
+    )

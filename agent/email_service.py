@@ -76,6 +76,54 @@ def send_confirmation_email(to_email: str, name: str, day: str, time: str, reaso
         return False
 
 
+def send_handoff_email(to_email: str, phone: str, history: list, reactivate_url: str) -> bool:
+    """Avisa al equipo de la clínica de que un paciente pide hablar con una persona."""
+    api_key = os.getenv('RESEND_API_KEY')
+    if not api_key or not to_email:
+        print("[HANDOFF] RESEND_API_KEY o email de la clínica no configurado — aviso no enviado")
+        return False
+
+    resend.api_key = api_key
+    import html as _html
+    clean_phone = phone.replace("whatsapp:", "").strip()
+    wa_link = "https://wa.me/" + clean_phone.replace("+", "").replace(" ", "")
+
+    rows = ""
+    for m in history[-12:]:
+        who = "Paciente" if m.get("role") == "user" else "Camila"
+        text = _html.escape(str(m.get("content", ""))).replace("\n", "<br>")
+        rows += f"<p style='margin:6px 0'><strong>{who}:</strong> {text}</p>"
+
+    body = f"""
+    <html><body style="font-family: Arial, sans-serif; color:#333; max-width:560px; margin:0 auto;">
+      <div style="background:#e65100; padding:16px; text-align:center;">
+        <h2 style="color:white; margin:0;">🙋 Un paciente quiere hablar con una persona</h2>
+      </div>
+      <div style="padding:24px; background:#f9f9f9;">
+        <p><strong>Teléfono:</strong> {clean_phone}</p>
+        <p><a href="{wa_link}" style="background:#25D366;color:white;padding:10px 16px;border-radius:6px;text-decoration:none;">Escribirle por WhatsApp</a></p>
+        <p>El asistente ha dejado de responder a este paciente para que le atendáis vosotros.
+        Se reactivará solo en unas horas, o al instante con este enlace:
+        <a href="{reactivate_url}">reactivar asistente</a></p>
+        <hr><h3>Conversación</h3>{rows}
+      </div>
+    </body></html>
+    """
+
+    try:
+        response = resend.Emails.send({
+            "from": "Clínica Dental Sevilla <citas@nivelup.es>",
+            "to": [to_email],
+            "subject": f"🙋 Atención humana solicitada — {clean_phone}",
+            "html": body,
+        })
+        print(f"[HANDOFF] Aviso enviado a {to_email} — id: {response.get('id', '?')}")
+        return True
+    except Exception as e:
+        _log_resend_failure("aviso de atención humana", to_email, e)
+        return False
+
+
 def send_cancellation_email(to_email: str, name: str, day: str, time: str) -> bool:
     """Envía email de cancelación de cita via Resend SDK."""
     api_key = os.getenv('RESEND_API_KEY')

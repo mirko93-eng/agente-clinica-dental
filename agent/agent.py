@@ -10,7 +10,20 @@ from agent.appointment_parser import (
     parse_appointment_from_response,
     parse_cancellation_from_response,
 )
-from agent.email_service import send_confirmation_email, send_cancellation_email
+import time
+import hashlib
+from urllib.parse import quote as urllib_quote
+from agent.email_service import send_confirmation_email, send_cancellation_email, send_handoff_email
+
+HANDOFF_TAG = "[HUMANO]"
+HANDOFF_HOURS = float(os.getenv("HANDOFF_HOURS", "12"))
+PUBLIC_URL = os.getenv("PUBLIC_URL", "https://web-production-39cb7.up.railway.app")
+
+
+def handoff_token(phone: str) -> str:
+    """Token para el enlace de reactivación (no adivinable sin el secreto)."""
+    secret = os.getenv("HANDOFF_SECRET") or os.getenv("ANTHROPIC_API_KEY", "")
+    return hashlib.sha256(f"{secret}|{phone}".encode("utf-8")).hexdigest()[:20]
 from agent.reminder_service import (
     schedule_whatsapp_reminder,
     cancel_whatsapp_reminder,
@@ -78,6 +91,8 @@ class DentalAgent:
         self.conversations: dict[str, list[dict]] = defaultdict(list, raw.get("conversations", {}))
         self.confirmed_appointments: set[str] = set(raw.get("confirmed_appointments", []))
         self.confirmed_cancellations: set[str] = set(raw.get("confirmed_cancellations", []))
+        # Pacientes atendidos por una persona: {phone: timestamp_inicio}
+        self.human_mode: dict[str, float] = dict(raw.get("human_mode", {}))
         print(f"[DATA] Cargados {len(self.conversations)} pacientes en memoria")
 
     def _persist(self):
@@ -85,8 +100,43 @@ class DentalAgent:
         _save_data({
             "conversations": dict(self.conversations),
             "confirmed_appointments": list(self.confirmed_appointments),
-            "confirmed_cancellations": list(self.confirmed_cancellations)
+            "confirmed_cancellations": list(self.confirmed_cancellations),
+            "human_mode": self.human_mode,
         })
+
+    def is_human_mode(self, phone: str) -> bool:
+        started = self.human_mode.get(phone)
+        if started is None:
+            return False
+        if time.time() - started > HANDOFF_HOURS * 3600:
+            self.human_mode.pop(phone, None)
+            self._persist()
+            return False
+        return True
+
+    def reactivate(self, phone: str) -> bool:
+        if phone in self.human_mode:
+            self.human_mode.pop(phone, None)
+            self._persist()
+            return True
+        return False
+
+    def _handle_handoff(self, phone: str):
+        """Pausa el asistente para este paciente y avisa al equipo por email."""
+        self.human_mode[phone] = time.time()
+        self._persist()
+        history = list(self.conversations[phone])
+        to_email = os.getenv("CLINIC_EMAIL") or os.getenv("GMAIL_USER", "")
+        url = f"{PUBLIC_URL}/reactivar?phone={urllib_quote(phone)}&token={handoff_token(phone)}"
+
+        def background():
+            try:
+                send_handoff_email(to_email, phone, history, url)
+            except Exception as e:
+                print(f"[HANDOFF ERROR] {e}")
+
+        threading.Thread(target=background, daemon=True).start()
+        print(f"[HANDOFF] {phone} pasa a atención humana durante {HANDOFF_HOURS}h")
 
     def _inject_availability(self, phone: str, raw_message: str):
         """
@@ -162,6 +212,16 @@ class DentalAgent:
         print(f"[CANCEL LOOKUP] {phone}: {len(appointments)} cita(s) encontrada(s)")
 
     def process_message(self, phone: str, message: str) -> str:
+        # Si una persona del equipo está atendiendo a este paciente, el asistente calla
+        if self.is_human_mode(phone):
+            if self.conversations[phone] and self.conversations[phone][-1]["role"] == "user":
+                self.conversations[phone][-1]["content"] += f"\n{message}"
+            else:
+                self.conversations[phone].append({"role": "user", "content": message})
+            self._persist()
+            print(f"[HANDOFF] {phone} en atención humana — el asistente no responde")
+            return ""
+
         # Fusionar mensajes consecutivos de usuario (evita error de Claude API)
         if self.conversations[phone] and self.conversations[phone][-1]["role"] == "user":
             self.conversations[phone][-1]["content"] += f"\n{message}"
@@ -186,7 +246,14 @@ class DentalAgent:
 
         reply = response.content[0].text.strip()
 
+        wants_human = HANDOFF_TAG in reply
+        if wants_human:
+            reply = reply.replace(HANDOFF_TAG, "").strip()
+
         self.conversations[phone].append({"role": "assistant", "content": reply})
+
+        if wants_human:
+            self._handle_handoff(phone)
 
         # Guardar en disco tras cada mensaje
         self._persist()
